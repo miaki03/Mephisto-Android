@@ -51,6 +51,8 @@ data class Message(
     val text: String,
     val createdAt: String,
     val clientMsgId: String?,
+    /** 服务端每条消息都带 session_id；SSE 事件靠它决定该合并进哪个会话的缓存。 */
+    val sessionId: String = "",
 ) {
     val isOutgoing: Boolean get() = direction == "out"
 }
@@ -156,5 +158,6 @@ object Parsers {
         text = item.optString("text", ""),
         createdAt = item.optString("created_at", ""),
         clientMsgId = item.optString("client_msg_id").ifEmpty { null },
+        sessionId = item.optString("session_id"),
     )
 }
