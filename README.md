@@ -13,6 +13,19 @@ Mephisto 的手机入口。服务端在另一个仓库（`Mephisto`），接口�
 | 工具链 | JDK 21、AGP 9.4.1、Gradle 9.8.2、build-tools 36.0.0 |
 | 产物 | `app/build/outputs/apk/debug/app-debug.apk`（约 28 MB） |
 
+## 测试
+
+`powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Task testDebugUnitTest
+`
+
+pp/src/test/java/.../core/ApiTest.kt 用手写 JSON 验解析与错误映射；
+RealPayloadTest.kt 用**真服务端抓下来的响应**（pp/src/test/resources/fixtures/*.json）当夹具——
+手写 JSON 只能证明解析器符合我的想象，抓下来的字节能抓到"服务端改了字段名"这种问题。
+
+夹具怎么来的：起 mephisto serve，带令牌 GET /healthz、/api/v1/sessions、
+/api/v1/sessions/{id}/messages、/api/v1/notices，把原始响应原样落盘。服务端接口变了就重抓一次。
+
 ## 构建
 
 工具链全部装在仓库外面（`E:\study\.toolchain`），仓库里只有代码：
