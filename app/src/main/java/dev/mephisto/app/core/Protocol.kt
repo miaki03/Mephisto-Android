@@ -96,6 +96,17 @@ object Parsers {
         return (0 until items.length()).map { index -> message(items.getJSONObject(index)) }
     }
 
+    /** POST /messages 的 202：消息本身 + 排队信息。 */
+    fun receipt(body: String): PostReceipt {
+        val root = JSONObject(body)
+        return PostReceipt(
+            message = message(root.getJSONObject("message")),
+            jobId = root.optString("job_id").ifEmpty { null },
+            queued = root.optBoolean("queued", false),
+            duplicate = root.optBoolean("duplicate", false),
+        )
+    }
+
     fun notices(body: String): List<Notice> {
         val items = JSONObject(body).optJSONArray("items") ?: JSONArray()
         return (0 until items.length()).map { index ->

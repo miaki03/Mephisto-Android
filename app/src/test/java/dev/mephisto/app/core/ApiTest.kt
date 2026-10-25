@@ -7,10 +7,18 @@ import org.junit.Test
 private class FakeTransport(private val replyOf: (String) -> HttpReply) : HttpTransport {
     var lastUrl: String? = null
     var lastHeaders: Map<String, String> = emptyMap()
+    var lastBody: String? = null
 
     override fun get(url: String, headers: Map<String, String>): HttpReply {
         lastUrl = url
         lastHeaders = headers
+        return replyOf(url)
+    }
+
+    override fun post(url: String, headers: Map<String, String>, body: String): HttpReply {
+        lastUrl = url
+        lastHeaders = headers
+        lastBody = body
         return replyOf(url)
     }
 }
@@ -134,6 +142,63 @@ class ErrorMappingTest {
         val (code, message) = Parsers.error("""{"message":"nope"}""")
         assertEquals("bad_error", code)
         assertTrue(message.contains("nope"))
+    }
+}
+
+class PostMessageTest {
+    @Test
+    fun `post carries body and parses the 202 receipt`() {
+        val transport = ok(
+            """{"message":{"id":"m1","seq":3,"direction":"in","text":"你好","created_at":"t"},
+                "queued":true,"duplicate":false,"job_id":"job-9"}""",
+        )
+        val result = api(transport).postMessage("01A", "你好", "c_1")
+        assertTrue(result is ApiResult.Ok)
+        val receipt = (result as ApiResult.Ok).value
+        assertEquals("job-9", receipt.jobId)
+        assertTrue(receipt.queued)
+        assertEquals(false, receipt.duplicate)
+        assertEquals("你好", receipt.message.text)
+
+        val body = transport.lastBody!!
+        assertTrue(body, body.contains("\"client_msg_id\":\"c_1\""))
+        assertTrue(body, body.contains("\"text\":\"你好\""))
+        assertEquals("Bearer tok", transport.lastHeaders["Authorization"])
+    }
+
+    @Test
+    fun `post escapes quotes and newlines in the text`() {
+        val transport = ok("""{"message":{"id":"m1","direction":"in","text":"x"}}""")
+        api(transport).postMessage("01A", "他说\"别这样\"\n然后走了", "c_1")
+        val body = transport.lastBody!!
+        assertTrue(body, body.contains("\\\"别这样\\\""))
+        assertTrue(body, body.contains("\\n"))
+    }
+
+    @Test
+    fun `duplicate receipt is surfaced`() {
+        val transport = ok("""{"message":{"id":"m1","direction":"in","text":"x"},"duplicate":true}""")
+        val receipt = (api(transport).postMessage("01A", "x", "c_1") as ApiResult.Ok).value
+        assertTrue(receipt.duplicate)
+        assertEquals(null, receipt.jobId)
+    }
+
+    @Test
+    fun `cancel job returns the server verdict`() {
+        val transport = ok("""{"job_id":"job-9","result":"interrupted"}""")
+        val result = api(transport).cancelJob("job-9")
+        assertEquals("interrupted", (result as ApiResult.Ok).value)
+        assertTrue(transport.lastUrl!!.endsWith("/api/v1/jobs/job-9/cancel"))
+    }
+
+    @Test
+    fun `cancel too late maps to a failure with the server code`() {
+        val transport = FakeTransport {
+            HttpReply(409, """{"error":{"code":"too_late","message":"任务已经结束，来不及了"}}""")
+        }
+        val failure = api(transport).cancelJob("job-9") as ApiResult.Failure
+        assertEquals("too_late", failure.code)
+        assertEquals(409, failure.httpStatus)
     }
 }
 

@@ -62,9 +62,15 @@ class RealPayloadTest {
             "/api/v1/sessions/" to fixture("messages"),
             "/api/v1/notices" to fixture("notices"),
         )
-        val transport = HttpTransport { url, _ ->
-            val match = fixtures.entries.firstOrNull { url.contains(it.key) }
-            HttpReply(if (match == null) 404 else 200, match?.value ?: "")
+        val transport = object : HttpTransport {
+            private fun reply(url: String): HttpReply {
+                val match = fixtures.entries.firstOrNull { url.contains(it.key) }
+                return HttpReply(if (match == null) 404 else 200, match?.value ?: "")
+            }
+
+            override fun get(url: String, headers: Map<String, String>): HttpReply = reply(url)
+
+            override fun post(url: String, headers: Map<String, String>, body: String): HttpReply = reply(url)
         }
         val api = MephistoApi(transport, "http://fixture.local", "tok")
 
