@@ -208,6 +208,11 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
         boxVersion++
     }
 
+    // 进 App 就自动拉一次：没有这个，用户会以为"没数据"，其实只是没人点刷新
+    LaunchedEffect(token) {
+        if (token.isNotBlank()) loadSessions()
+    }
+
     // 200ms 一跳：后悔期倒计时和秒表都靠它
     LaunchedEffect(Unit) {
         while (true) {

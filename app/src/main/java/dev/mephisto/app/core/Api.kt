@@ -12,7 +12,7 @@ interface HttpTransport {
 }
 
 /** 用 JDK 自带的 `HttpURLConnection`：零依赖，JVM 单测里也能跑。 */
-class UrlConnectionTransport(private val timeoutMillis: Int = 10_000) : HttpTransport {
+class UrlConnectionTransport(private val timeoutMillis: Int = 20_000) : HttpTransport {
     override fun get(url: String, headers: Map<String, String>): HttpReply =
         exchange(url, headers, body = null)
 
@@ -79,6 +79,9 @@ class MephistoApi(
 ) {
     private val base = baseUrl.trim().trimEnd('/')
 
+    /** 最近一次网络失败的可读原因，用于失败时展示。 */
+    private var lastError: String? = null
+
     fun healthz(): ApiResult<Health> = call("/healthz") { Parsers.health(it) }
 
     fun sessions(sinceSeq: Int = 0): ApiResult<List<Session>> =
@@ -117,22 +120,33 @@ class MephistoApi(
     // ---------- 内部 ----------
     private fun <T> call(path: String, parse: (String) -> T): ApiResult<T> {
         if (base.isEmpty()) return ApiResult.Failure("no_base_url", "还没填服务端地址")
-        val reply = try {
-            transport.get(base + path, authHeaders())
-        } catch (error: Exception) {
-            return ApiResult.Failure("network", "${error.javaClass.simpleName}: ${error.message}")
-        }
+        val reply = attempt { transport.get(base + path, authHeaders()) }
+            ?: return ApiResult.Failure("network", lastError ?: "网络失败")
         return interpret(reply, parse)
     }
 
     private fun <T> callPost(path: String, body: String, parse: (String) -> T): ApiResult<T> {
         if (base.isEmpty()) return ApiResult.Failure("no_base_url", "还没填服务端地址")
-        val reply = try {
-            transport.post(base + path, authHeaders(), body)
-        } catch (error: Exception) {
-            return ApiResult.Failure("network", "${error.javaClass.simpleName}: ${error.message}")
-        }
+        val reply = attempt { transport.post(base + path, authHeaders(), body) }
+            ?: return ApiResult.Failure("network", lastError ?: "网络失败")
         return interpret(reply, parse)
+    }
+
+    /**
+     * 移动网络下第一次 TLS 握手偶尔会超时（切网、基站切换都会）。
+     * 重试一次比让用户自己点刷新体面。只重试异常，不重试 4xx/5xx——那重试多少次都一样。
+     */
+    private fun attempt(send: () -> HttpReply): HttpReply? {
+        lastError = null
+        repeat(2) { index ->
+            try {
+                return send()
+            } catch (error: Exception) {
+                lastError = "${error.javaClass.simpleName}: ${error.message}"
+                if (index == 0) Thread.sleep(400)
+            }
+        }
+        return null
     }
 
     private fun <T> interpret(reply: HttpReply, parse: (String) -> T): ApiResult<T> = when {
