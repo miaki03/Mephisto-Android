@@ -96,6 +96,13 @@ object Parsers {
         return (0 until items.length()).map { index -> message(items.getJSONObject(index)) }
     }
 
+    /** SSE 里 message 事件的 data：`{"message": {...}}`。 */
+    fun messageEvent(body: String): Message {
+        val root = JSONObject(body)
+        val item = root.optJSONObject("message") ?: root
+        return message(item)
+    }
+
     /** POST /messages 的 202：消息本身 + 排队信息。 */
     fun receipt(body: String): PostReceipt {
         val root = JSONObject(body)

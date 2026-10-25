@@ -5,23 +5,39 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -31,21 +47,25 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.mephisto.app.core.ApiResult
 import dev.mephisto.app.core.Message
 import dev.mephisto.app.core.MephistoApi
 import dev.mephisto.app.core.Outbox
-import dev.mephisto.app.core.OutboxState
 import dev.mephisto.app.core.ProgressTracker
+import dev.mephisto.app.core.Parsers
 import dev.mephisto.app.core.QueueFullException
 import dev.mephisto.app.core.Session
 import dev.mephisto.app.core.SseClient
 import dev.mephisto.app.core.UndoPlan
 import dev.mephisto.app.core.UrlConnectionTransport
+import dev.mephisto.app.ui.SystemScreen
 import kotlin.concurrent.thread
 import kotlinx.coroutines.delay
 
@@ -58,37 +78,37 @@ private const val DEFAULT_BASE = "http://127.0.0.1:8787"
 private fun newClientMsgId(): String =
     "c_" + java.util.UUID.randomUUID().toString().replace("-", "").take(24)
 
-/**
- * 第 8 步的只读 + 第 9 步的发送 / 排队 / 三级撤销 / 进度 / 打断。
- *
- * 这里只做"把状态画出来"和"把点击转成意图"，判断全在 `core/` 里——
- * 那部分有 53 个 JVM 单测，这一层没有。
- */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         setContent {
-            MaterialTheme {
+            MephistoTheme {
                 Root(prefs)
             }
         }
     }
 }
 
-/** 顶层只有两屏：主流程（会话/对话）与"提醒与权限"。 */
+@Composable
+private fun MephistoTheme(content: @Composable () -> Unit) {
+    // 跟随系统深浅色：之前用 MaterialTheme() 的默认浅色，深色模式下整屏发灰
+    val colors = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+    MaterialTheme(colorScheme = colors, content = content)
+}
+
 @Composable
 private fun Root(prefs: SharedPreferences) {
     var showSystem by remember { mutableStateOf(false) }
     if (showSystem) {
-        dev.mephisto.app.ui.SystemScreen(androidx.compose.ui.platform.LocalContext.current) {
-            showSystem = false
-        }
+        BackHandler { showSystem = false }
+        SystemScreen(LocalContext.current) { showSystem = false }
     } else {
         App(prefs, onOpenSystem = { showSystem = true })
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
     var baseUrl by remember { mutableStateOf(prefs.getString(KEY_BASE, DEFAULT_BASE) ?: DEFAULT_BASE) }
@@ -97,24 +117,26 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
     var current by remember { mutableStateOf<Session?>(null) }
     var messages by remember { mutableStateOf(emptyList<Message>()) }
     var draft by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("填好地址与令牌，然后刷新会话") }
+    var status by remember { mutableStateOf("") }
     var sseStatus by remember { mutableStateOf("未连接") }
     var busy by remember { mutableStateOf(false) }
     var boxVersion by remember { mutableIntStateOf(0) }
     var progressVersion by remember { mutableIntStateOf(0) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var showNewDialog by remember { mutableStateOf(false) }
+    var showConnect by remember { mutableStateOf(false) }
 
     val outbox = remember { Outbox(clock = { System.currentTimeMillis() }) }
     val progress = remember { ProgressTracker(clock = { System.currentTimeMillis() }) }
     val main = remember { Handler(Looper.getMainLooper()) }
     val api = remember(baseUrl, token) { MephistoApi(UrlConnectionTransport(), baseUrl, token) }
+    val listState = rememberLazyListState()
 
     fun persist() = prefs.edit().putString(KEY_BASE, baseUrl).putString(KEY_TOKEN, token).apply()
 
     fun loadSessions() {
         if (busy) return
         busy = true
-        status = "读取会话…"
         persist()
         val client = api
         thread(name = "sessions") {
@@ -138,10 +160,7 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
         thread(name = "messages") {
             val result = client.messages(sessionId)
             main.post {
-                if (result is ApiResult.Ok && current?.id == sessionId) {
-                    messages = result.value
-                    boxVersion++
-                }
+                if (result is ApiResult.Ok && current?.id == sessionId) messages = result.value
             }
         }
     }
@@ -149,15 +168,30 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
     fun openSession(session: Session) {
         current = session
         messages = emptyList()
-        status = "读取「${session.title}」…"
+        status = ""
         val client = api
         thread(name = "messages") {
             val result = client.messages(session.id)
             main.post {
                 when (result) {
+                    is ApiResult.Ok -> messages = result.value
+                    is ApiResult.Failure -> status = result.readable
+                }
+            }
+        }
+    }
+
+    fun createSession(title: String) {
+        val name = title.trim().ifBlank { "新会话" }
+        val client = api
+        status = "创建中…"
+        thread(name = "create") {
+            val result = client.createSession(name)
+            main.post {
+                when (result) {
                     is ApiResult.Ok -> {
-                        messages = result.value
-                        status = "${result.value.size} 条消息"
+                        sessions = listOf(result.value) + sessions
+                        openSession(result.value)
                     }
 
                     is ApiResult.Failure -> status = result.readable
@@ -208,17 +242,17 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
         boxVersion++
     }
 
-    // 进 App 就自动拉一次：没有这个，用户会以为"没数据"，其实只是没人点刷新
-    LaunchedEffect(token) {
-        if (token.isNotBlank()) loadSessions()
-    }
-
-    // 200ms 一跳：后悔期倒计时和秒表都靠它
+    // 200ms 一跳：后悔期倒计时与秒表都靠它
     LaunchedEffect(Unit) {
         while (true) {
             now = System.currentTimeMillis()
             delay(200)
         }
+    }
+
+    // 进 App 自动拉一次；令牌变化（比如刚填好）也重试
+    LaunchedEffect(token) {
+        if (token.isNotBlank()) loadSessions()
     }
 
     // 后悔期到点 → 真正发出去
@@ -246,7 +280,7 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
         }
     }
 
-    // SSE：只在打开某个会话时连；换会话就断开重连
+    // SSE：只在打开某个会话时连
     DisposableEffect(current?.id, baseUrl, token) {
         val session = current
         if (session == null) {
@@ -258,15 +292,24 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
                 onEvent = { event ->
                     when (event.kind) {
                         "job" -> {
-                            if (progress.apply(event.data)) progressVersion++
-                            if (progress.state == "done" || progress.state == "failed" || progress.state == "cancelled") {
+                            // 只理会"正在跑的这一轮"。SSE 会重放历史事件，
+                            // 旧 job 的 done/cancelled 会把进度行污染成"已打断"（真机上见过）。
+                            if (progress.working() && progress.apply(event.data)) {
                                 main.post { progressVersion++ }
                             }
                         }
 
-                        "message" -> main.post {
-                            progressVersion++
-                            reloadMessages(session.id)
+                        "message" -> {
+                            val incoming = runCatching { Parsers.messageEvent(event.data) }.getOrNull()
+                            main.post {
+                                if (incoming?.clientMsgId != null) {
+                                    // 服务端回显了这条：本地"排队中"的条目可以收工了
+                                    outbox.markDone(incoming.clientMsgId)
+                                    boxVersion++
+                                }
+                                progressVersion++
+                                reloadMessages(session.id)
+                            }
                         }
 
                         else -> Unit
@@ -279,133 +322,322 @@ private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
         }
     }
 
-    Column(
+    // 有新消息就滚到底
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    }
+
+    // 返回键：会话里退回列表；列表里交回系统（滑边缘不再直接掉桌面）
+    BackHandler(enabled = current != null) {
+        current = null
+        messages = emptyList()
+        progress.finish()
+    }
+
+    val progressLine = remember(progressVersion, now) { progress.statusLine(now) }
+
+    if (current == null) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Mephisto", fontWeight = FontWeight.SemiBold) },
+                    actions = {
+                        TextButton(onClick = onOpenSystem) { Text("提醒") }
+                        TextButton(onClick = { showConnect = !showConnect }) { Text("连接") }
+                    },
+                )
+            },
+            floatingActionButton = {
+                ExtendedFloatingActionButton(
+                    onClick = { showNewDialog = true },
+                    icon = { Text("＋") },
+                    text = { Text("新会话") },
+                )
+            },
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp)) {
+                if (status.isNotBlank()) {
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (showConnect) {
+                    ConnectionPanel(
+                        baseUrl = baseUrl,
+                        token = token,
+                        onBaseUrl = { baseUrl = it },
+                        onToken = { token = it },
+                        onSave = {
+                            persist()
+                            loadSessions()
+                        },
+                    )
+                }
+                if (sessions.isEmpty()) {
+                    EmptyHint("还没有会话。点右下角「新会话」开一个。")
+                } else {
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        items(sessions, key = { it.id }) { session ->
+                            SessionRow(session) { openSession(session) }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        val session = current!!
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    navigationIcon = {
+                        TextButton(onClick = {
+                            current = null
+                            messages = emptyList()
+                            progress.finish()
+                        }) { Text("←") }
+                    },
+                    title = { Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    actions = {
+                        if (progress.working()) {
+                            TextButton(onClick = {
+                                val jobId = progress.jobId
+                                val client = api
+                                if (jobId != null) {
+                                    thread(name = "interrupt") {
+                                        val outcome = client.cancelJob(jobId)
+                                        main.post {
+                                            status = when (outcome) {
+                                                is ApiResult.Ok -> "已打断"
+                                                is ApiResult.Failure -> outcome.readable
+                                            }
+                                            progressVersion++
+                                        }
+                                    }
+                                }
+                            }) { Text("打断") }
+                        }
+                    },
+                )
+            },
+        ) { padding ->
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .imePadding(),
+            ) {
+                val crumbs = listOf(progressLine, status, "事件流：$sseStatus")
+                    .filter { it.isNotBlank() && it != "空闲" }
+                    .joinToString(" · ")
+                if (crumbs.isNotBlank()) {
+                    Text(
+                        crumbs,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                    )
+                }
+
+                val pending = remember(boxVersion) {
+                    outbox.items().filter { it.sessionId == session.id && !it.terminal }
+                }
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(messages, key = { it.id }) { message -> Bubble(message) }
+                    items(pending, key = { it.clientMsgId }) { item ->
+                        PendingRow(
+                            text = item.text,
+                            badge = item.badge(now),
+                            onUndo = { undo(item.clientMsgId) },
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+                Row(
+                    Modifier.fillMaxWidth().padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        placeholder = { Text("说点什么") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 4,
+                    )
+                    Button(onClick = { send() }, enabled = draft.isNotBlank()) { Text("发送") }
+                }
+                Text(
+                    "发件箱 ${pending.size}/5 · 发送后 3 秒内可撤销",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 14.dp, bottom = 8.dp),
+                )
+            }
+        }
+    }
+
+    if (showNewDialog) {
+        var title by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showNewDialog = false },
+            title = { Text("新会话") },
+            text = {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("会话名，例如「报销」") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showNewDialog = false
+                    createSession(title)
+                }) { Text("创建") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewDialog = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SessionRow(session: Session, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                session.title,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "seq ${session.seq}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun Bubble(message: Message) {
+    val mine = !message.isOutgoing
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = if (mine) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+            modifier = Modifier.widthIn(max = 300.dp),
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text(
+                    if (mine) "我" else "Mephisto",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(message.text, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingRow(text: String, badge: String, onUndo: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            badge,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+            modifier = Modifier.widthIn(max = 240.dp),
+        ) {
+            Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp))
+        }
+        TextButton(onClick = onUndo, modifier = Modifier.padding(start = 4.dp)) { Text("撤销") }
+    }
+}
+
+@Composable
+private fun ConnectionPanel(
+    baseUrl: String,
+    token: String,
+    onBaseUrl: (String) -> Unit,
+    onToken: (String) -> Unit,
+    onSave: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Mephisto", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Text(status, style = MaterialTheme.typography.bodySmall)
-
-        val session = current
-        if (session == null) {
-            OutlinedTextField(
-                value = baseUrl,
-                onValueChange = { baseUrl = it },
-                label = { Text("服务端地址") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = token,
-                onValueChange = { token = it },
-                label = { Text("Bearer 令牌") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { loadSessions() }, enabled = !busy) { Text("刷新会话") }
-                OutlinedButton(onClick = onOpenSystem) { Text("提醒与权限") }
-            }
-            HorizontalDivider()
-            if (sessions.isEmpty()) {
-                Text("还没有会话。先在服务端建一个。", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(sessions, key = { it.id }) { session ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { openSession(session) }
-                                .padding(vertical = 10.dp),
-                        ) {
-                            Text(session.title, style = MaterialTheme.typography.titleMedium)
-                            Text("seq ${session.seq}", style = MaterialTheme.typography.bodySmall)
-                        }
-                        HorizontalDivider()
-                    }
-                }
-            }
-        } else {
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            TextButton(onClick = {
-                current = null
-                messages = emptyList()
-                progress.finish()
-            }) { Text("← 返回") }
-            Text(session.title, style = MaterialTheme.typography.titleMedium)
-        }
-
-        val progressLine = remember(progressVersion, now) { progress.statusLine(now) }
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Text(progressLine, style = MaterialTheme.typography.bodySmall)
-            if (progress.working()) {
-                TextButton(onClick = {
-                    val jobId = progress.jobId
-                    val client = api
-                    if (jobId != null) {
-                        thread(name = "interrupt") {
-                            val outcome = client.cancelJob(jobId)
-                            main.post {
-                                status = when (outcome) {
-                                    is ApiResult.Ok -> "已打断（${outcome.value}）"
-                                    is ApiResult.Failure -> outcome.readable
-                                }
-                                progressVersion++
-                            }
-                        }
-                    }
-                }) { Text("打断") }
-            }
-        }
-        Text("事件流：$sseStatus", style = MaterialTheme.typography.bodySmall)
-        HorizontalDivider()
-
-        val pendingItems = remember(boxVersion) {
-            outbox.items().filter { it.sessionId == session.id && !it.terminal }
-        }
-        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            items(messages, key = { it.id }) { message ->
-                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    Text(
-                        if (message.isOutgoing) "Agent" else "我",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                    Text(message.text, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-            items(pendingItems.map { it.clientMsgId }) { id ->
-                val item = outbox.get(id) ?: return@items
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(item.text, style = MaterialTheme.typography.bodyMedium)
-                        Text(item.badge(now), style = MaterialTheme.typography.labelSmall)
-                    }
-                    OutlinedButton(onClick = { undo(item.clientMsgId) }) { Text("撤销") }
-                }
-            }
-        }
-
-        if (outbox.items().any { it.state == OutboxState.FAILED && it.sessionId == session.id }) {
-            Text("有发送失败的消息，点「撤销」后可重新输入", style = MaterialTheme.typography.bodySmall)
-        }
-
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = onBaseUrl,
+            label = { Text("服务端地址") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = token,
+            onValueChange = onToken,
+            label = { Text("Bearer 令牌") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                placeholder = { Text("说点什么（3 秒内可撤销）") },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-            )
-            Button(onClick = { send() }) { Text("发送") }
+            Button(onClick = onSave) { Text("保存并刷新") }
+            OutlinedButton(onClick = { onBaseUrl(DEFAULT_BASE) }) { Text("用本机地址") }
         }
-        Text("已在发件箱 ${outbox.pending(session.id).size}/5 条", style = MaterialTheme.typography.labelSmall)
-        }
+    }
+}
+
+@Composable
+private fun EmptyHint(text: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

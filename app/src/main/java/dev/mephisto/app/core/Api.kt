@@ -87,6 +87,12 @@ class MephistoApi(
     fun sessions(sinceSeq: Int = 0): ApiResult<List<Session>> =
         call("/api/v1/sessions?since_seq=$sinceSeq&limit=$pageSize") { Parsers.sessions(it) }
 
+    /** 新建会话。App 里终于能自己开一个了——之前只能在服务端命令行建。 */
+    fun createSession(title: String, kind: String = "chatter"): ApiResult<Session> =
+        callPost("/api/v1/sessions", """{"title":${quote(title)},"kind":${quote(kind)}}""") {
+            Parsers.session(it)
+        }
+
     fun session(sessionId: String): ApiResult<Session> =
         call("/api/v1/sessions/${encode(sessionId)}") { Parsers.session(it) }
 

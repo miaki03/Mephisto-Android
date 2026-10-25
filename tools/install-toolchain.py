@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import os
 import sys
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-ROOT = Path(r"E:\study\.toolchain")
+# 工具链根目录：优先 $env:MEPHISTO_TOOLCHAIN，否则用"仓库同级目录下的 .toolchain"
+# 不要在这里写死盘符。
+ROOT = Path(os.environ.get("MEPHISTO_TOOLCHAIN") or (Path(__file__).resolve().parents[2] / ".toolchain")).resolve()
 DOWNLOADS = ROOT / "downloads"
 UA = {"User-Agent": "mephisto-setup/1.0"}
 

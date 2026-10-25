@@ -18,3 +18,6 @@ local.properties
 # 系统
 Thumbs.db
 desktop.ini
+
+# 本机运行产物（acl 修复报告、抓包、截图等）
+state/
