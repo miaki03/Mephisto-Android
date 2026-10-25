@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  调试构建专用：允许明文 HTTP，方便在隧道还没配好时直连家里的 127.0.0.1 / 局域网地址。
+  release 构建不包含这个文件，因此 release 只能走 HTTPS（见 docs/15）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:usesCleartextTraffic="true"
+        tools:ignore="UnusedAttribute" />
+</manifest>
