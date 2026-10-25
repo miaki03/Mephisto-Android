@@ -50,6 +50,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Task instal
 3. **`%TEMP%` 不可写**：Gradle 的 `java.io.tmpdir`、Kotlin 编译、`adb` 的日志都要改道到 `.toolchain\jtmp`；
    `kotlin.compiler.execution.strategy=in-process` 是为了避开 Kotlin daemon 往 `%LOCALAPPDATA%` 写临时文件。
 
+## 提醒链路（S10）
+
+`
+服务端 notice(due_utc) --/api/v1/notices--> ReminderPlan.plan(now, exactAllowed)
+   ├─ FUTURE  -> AlarmManager.setAlarmClock（无权限则 setWindow 10 分钟）
+   ├─ OVERDUE -> 立刻弹通知（宽限 2 小时内）
+   └─ SKIP    -> 不处理（过期太久，服务端已汇总成"你错过了 N 条"）
+`
+
+- equestCode 由 
+otice.id 经 FNV-1a 派生 → 重排是覆盖，不是叠加；取消能取消掉。
+- 常驻服务用 emoteMessaging（无 6 小时上限），通知渠道 IMPORTANCE_LOW（无声）。
+- 开机/时区变更/时间被改/App 更新都会触发 RescheduleReceiver 重排——AlarmManager 的闹钟不跨重启。
+
+### 三个必须手动开的开关
+
+App 里「提醒与权限」页有按钮：通知权限、精确闹钟、电池优化。少开任何一个，表现都是"它没提醒我"，而且**没有报错**。
+
 ## 目录
 
 ```

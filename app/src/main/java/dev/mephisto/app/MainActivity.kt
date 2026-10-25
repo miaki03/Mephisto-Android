@@ -70,14 +70,27 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         setContent {
             MaterialTheme {
-                App(prefs)
+                Root(prefs)
             }
         }
     }
 }
 
+/** 顶层只有两屏：主流程（会话/对话）与"提醒与权限"。 */
 @Composable
-private fun App(prefs: SharedPreferences) {
+private fun Root(prefs: SharedPreferences) {
+    var showSystem by remember { mutableStateOf(false) }
+    if (showSystem) {
+        dev.mephisto.app.ui.SystemScreen(androidx.compose.ui.platform.LocalContext.current) {
+            showSystem = false
+        }
+    } else {
+        App(prefs, onOpenSystem = { showSystem = true })
+    }
+}
+
+@Composable
+private fun App(prefs: SharedPreferences, onOpenSystem: () -> Unit) {
     var baseUrl by remember { mutableStateOf(prefs.getString(KEY_BASE, DEFAULT_BASE) ?: DEFAULT_BASE) }
     var token by remember { mutableStateOf(prefs.getString(KEY_TOKEN, "") ?: "") }
     var sessions by remember { mutableStateOf(emptyList<Session>()) }
@@ -287,7 +300,10 @@ private fun App(prefs: SharedPreferences) {
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
             )
-            Button(onClick = { loadSessions() }, enabled = !busy) { Text("刷新会话") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { loadSessions() }, enabled = !busy) { Text("刷新会话") }
+                OutlinedButton(onClick = onOpenSystem) { Text("提醒与权限") }
+            }
             HorizontalDivider()
             if (sessions.isEmpty()) {
                 Text("还没有会话。先在服务端建一个。", style = MaterialTheme.typography.bodyMedium)
