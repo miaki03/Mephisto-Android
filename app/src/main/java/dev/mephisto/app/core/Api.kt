@@ -12,7 +12,10 @@ interface HttpTransport {
 }
 
 /** 用 JDK 自带的 `HttpURLConnection`：零依赖，JVM 单测里也能跑。 */
-class UrlConnectionTransport(private val timeoutMillis: Int = 20_000) : HttpTransport {
+class UrlConnectionTransport(
+    private val connectTimeoutMillis: Int = 8_000,
+    private val readTimeoutMillis: Int = 20_000,
+) : HttpTransport {
     override fun get(url: String, headers: Map<String, String>): HttpReply =
         exchange(url, headers, body = null)
 
@@ -22,8 +25,8 @@ class UrlConnectionTransport(private val timeoutMillis: Int = 20_000) : HttpTran
     private fun exchange(url: String, headers: Map<String, String>, body: String?): HttpReply {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
-            connection.connectTimeout = timeoutMillis
-            connection.readTimeout = timeoutMillis
+            connection.connectTimeout = connectTimeoutMillis
+            connection.readTimeout = readTimeoutMillis
             connection.requestMethod = if (body == null) "GET" else "POST"
             connection.setRequestProperty("Accept", "application/json")
             headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
